@@ -98,10 +98,15 @@ namespace Obj2Tiles
             Console.WriteLine(" *** OBJ to Tiles ***");
             Console.WriteLine();
 
+            // --progress: machine-readable JSON lines on stdout next to the human log (null = off,
+            // and then the output is exactly what it always was).
+            var progress = opts.Progress ? new ProgressReporter() : null;
+
             // Invalid options are a failure: signal it to the caller so batch/CI runs do not
             // mistake a rejected configuration for a successful conversion.
             if (!CheckOptions(opts))
             {
+                progress?.Error("Invalid options");
                 Environment.ExitCode = 1;
                 return;
             }
@@ -111,6 +116,7 @@ namespace Obj2Tiles
             if (!Options.TryParseScale(opts.Scale, out var scale, out var scaleError))
             {
                 Console.WriteLine($" !> {scaleError}");
+                progress?.Error(scaleError ?? "Invalid --scale");
                 Environment.ExitCode = 1;
                 return;
             }
@@ -159,6 +165,7 @@ namespace Obj2Tiles
 
             string? destFolderDecimation = null;
             string? destFolderSplit = null;
+            string? errorMessage = null;
 
             try
             {
@@ -171,7 +178,7 @@ namespace Obj2Tiles
                 sw.Start();
 
                 var decimateRes = await StagesFacade.Decimate(opts.Input, destFolderDecimation, opts.LODs, opts.DecimationMode,
-                    opts.IgnoreNormalMaps);
+                    opts.IgnoreNormalMaps, progress);
 
                 Console.WriteLine(" ?> Decimation stage done in {0}", sw.Elapsed);
 
@@ -192,7 +199,7 @@ namespace Obj2Tiles
                 var boundsMapper = await StagesFacade.Split(decimateRes.DestFiles, destFolderSplit, opts.Divisions,
                     opts.EffectiveZSplit, opts.KeepOriginalTextures, opts.SplitPointStrategy, opts.EffectiveOctree, (float)opts.LodTextureScale,
                     opts.Overlap, opts.IgnoreNormalMaps, opts.MaxTextureSize, opts.TextureQuality, opts.TextureFormat, opts.FineTextureQuality,
-                    opts.SingleMaterialPerPart);
+                    opts.SingleMaterialPerPart, progress);
 
                 Console.WriteLine(" ?> Splitting stage done in {0}", sw.Elapsed);
 
@@ -307,7 +314,8 @@ namespace Obj2Tiles
                 }
 
                 StagesFacade.Tile(destFolderSplit, tilesetOutput, opts.LODs, baseError, boundsMapper, gpsCoords, opts.LocalMode, opts.EffectiveOctree,
-                    opts.ErrorEstimationMode, opts.ErrorFactor, opts.EffectiveUseGlb, opts.LodTextureScale, rootSourceObj, gltfOptions);
+                    opts.ErrorEstimationMode, opts.ErrorFactor, opts.EffectiveUseGlb, opts.LodTextureScale, rootSourceObj, gltfOptions,
+                    progress);
 
                 Console.WriteLine(" ?> Tiling stage done in {0}", sw.Elapsed);
 
@@ -316,7 +324,9 @@ namespace Obj2Tiles
                     Console.WriteLine();
                     Console.WriteLine($" => Packing 3D Tiles Archive '{archivePath}'");
                     var compressionLevel = ThreeTzArchive.ResolveCompressionLevel(opts.ThreeTzCompression);
+                    progress?.Report("packing", 0, 1);
                     var entryCount = ThreeTzArchive.CreateFromDirectory(tilesetOutput, archivePath!, compressionLevel);
+                    progress?.Report("packing", 1, 1);
                     Console.WriteLine($" ?> 3TZ archive created with {entryCount} entries");
                 }
             }
@@ -327,6 +337,7 @@ namespace Obj2Tiles
                 // though no output was produced.
                 Console.Error.WriteLine(" !> Exception: {0}", ex.Message);
                 Environment.ExitCode = 1;
+                errorMessage = ex.Message;
             }
             finally
             {
@@ -362,6 +373,13 @@ namespace Obj2Tiles
 
                     Console.WriteLine(" ?> Cleaning up ok");
                 }
+
+                // Last line of a --progress run: written after the cleanup, so the reader knows
+                // the process has nothing left to do.
+                if (Environment.ExitCode == 0)
+                    progress?.Done(swg.Elapsed);
+                else
+                    progress?.Error(errorMessage ?? "Pipeline failed");
             }
         }
 
