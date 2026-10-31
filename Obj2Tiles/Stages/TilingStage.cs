@@ -23,11 +23,12 @@ public static partial class StagesFacade
 
         var tileExtension = useGlb ? ".glb" : ".b3dm";
 
-        var hasRootSource = rootSourceObj != null && File.Exists(rootSourceObj);
+        // The mesh of the root tile, when there is one.
+        var rootSource = rootSourceObj != null && File.Exists(rootSourceObj) ? rootSourceObj : null;
 
         // One step per converted tile, plus the root tile when there is one.
         ConvertAllTiles(sourcePath, destPath, lods, useGlb, gltfOptions,
-            progress == null ? null : count => progress.Begin("tiling", count + (hasRootSource ? 1 : 0)), out var counter);
+            progress == null ? null : count => progress.Begin("tiling", count + (rootSource != null ? 1 : 0)), out var counter);
 
         // Give the tileset root renderable content. The root tile spans the whole model but, in an
         // octree/multi-tile layout, its geometry lives only in the child tiles, leaving the root
@@ -39,23 +40,23 @@ public static partial class StagesFacade
         string? rootContentUri = null;
         TileBounds? rootBounds = null;
 
-        if (hasRootSource)
+        if (rootSource != null)
         {
             try
             {
                 var rootFileName = "root" + tileExtension;
                 var rootTile = Path.Combine(destPath, rootFileName);
                 if (useGlb)
-                    Utils.ConvertGlb(rootSourceObj, rootTile, gltfOptions);
+                    Utils.ConvertGlb(rootSource, rootTile, gltfOptions);
                 else
-                    Utils.ConvertB3dm(rootSourceObj, rootTile, gltfOptions);
+                    Utils.ConvertB3dm(rootSource, rootTile, gltfOptions);
                 rootContentUri = rootFileName;
 
-                var rootMesh = MeshUtils.LoadMesh(rootSourceObj, out _, false);
+                var rootMesh = MeshUtils.LoadMesh(rootSource, out _, false);
                 rootBounds = new TileBounds(rootMesh.Bounds, rootMesh.AverageEdgeLength,
                     rootMesh.MaximumEdgeLength, rootMesh.FacesCount);
 
-                Console.WriteLine($" ?> Generated root content from '{Path.GetFileName(rootSourceObj)}'");
+                Console.WriteLine($" ?> Generated root content from '{Path.GetFileName(rootSource)}'");
             }
             catch (Exception ex)
             {

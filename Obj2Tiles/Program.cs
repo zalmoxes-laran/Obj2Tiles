@@ -104,9 +104,10 @@ namespace Obj2Tiles
 
             // Invalid options are a failure: signal it to the caller so batch/CI runs do not
             // mistake a rejected configuration for a successful conversion.
-            if (!CheckOptions(opts))
+            var optionsError = OptionsError(opts);
+            if (optionsError != null)
             {
-                progress?.Error("Invalid options");
+                progress?.Error(optionsError);
                 Environment.ExitCode = 1;
                 return;
             }
@@ -138,13 +139,10 @@ namespace Obj2Tiles
                     : opts.Output.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + ".3tz";
 
                 var archiveParent = Path.GetDirectoryName(archivePath);
-                if (!string.IsNullOrEmpty(archiveParent))
-                    Directory.CreateDirectory(archiveParent);
                 tempBase = string.IsNullOrEmpty(archiveParent) ? Directory.GetCurrentDirectory() : archiveParent;
             }
             else
             {
-                Directory.CreateDirectory(opts.Output);
                 tempBase = opts.Output;
             }
 
@@ -161,7 +159,7 @@ namespace Obj2Tiles
 
             // Where the tiling stage writes the tileset: the output folder directly, or a temp folder that is
             // then packed into the .3tz archive.
-            var tilesetOutput = produce3tz ? createTempFolder($"{pipelineId}-obj2tiles-tileset") : opts.Output;
+            var tilesetOutput = produce3tz ? Path.Combine(actualTempBase, $"{pipelineId}-obj2tiles-tileset") : opts.Output;
 
             string? destFolderDecimation = null;
             string? destFolderSplit = null;
@@ -169,6 +167,11 @@ namespace Obj2Tiles
 
             try
             {
+                // The folders are made inside the try: an output that cannot be created fails the run
+                // like any other error (exit code 1, and the last --progress line is an error).
+                Directory.CreateDirectory(tempBase);
+                if (produce3tz)
+                    Directory.CreateDirectory(tilesetOutput);
 
                 destFolderDecimation = opts.StopAt == Stage.Decimation
                     ? opts.Output
@@ -236,6 +239,7 @@ namespace Obj2Tiles
                 if (!opts.NoRootContent && decimateRes.DestFiles.Length > 0)
                 {
                     rootSourceObj = decimateRes.DestFiles[^1];
+                    progress?.Report("root", 0, 1);
                     try
                     {
                         var rootTempDir = createTempFolder($"{pipelineId}-obj2tiles-root");
@@ -286,6 +290,8 @@ namespace Obj2Tiles
                     {
                         Console.WriteLine($" !> Could not compress root mesh ({ex.Message}); using full-resolution coarsest mesh.");
                     }
+
+                    progress?.Report("root", 1, 1);
                 }
 
                 Console.WriteLine();
@@ -356,22 +362,32 @@ namespace Obj2Tiles
                 }
                 else
                 {
-
                     Console.WriteLine(" => Cleaning up");
 
-                    if (destFolderDecimation != null && destFolderDecimation != opts.Output)
-                        Directory.Delete(destFolderDecimation, true);
+                    // A failed cleanup fails the run, but must not escape the finally: the last
+                    // --progress line below still has to be written.
+                    try
+                    {
+                        if (destFolderDecimation != null && destFolderDecimation != opts.Output)
+                            Directory.Delete(destFolderDecimation, true);
 
-                    if (destFolderSplit != null && destFolderSplit != opts.Output)
-                        Directory.Delete(destFolderSplit, true);
+                        if (destFolderSplit != null && destFolderSplit != opts.Output)
+                            Directory.Delete(destFolderSplit, true);
 
-                    if (produce3tz && Directory.Exists(tilesetOutput))
-                        Directory.Delete(tilesetOutput, true);
+                        if (produce3tz && Directory.Exists(tilesetOutput))
+                            Directory.Delete(tilesetOutput, true);
 
-                    if (!opts.UseSystemTempFolder && Directory.Exists(tmpFolder))
-                        Directory.Delete(tmpFolder, true);
+                        if (!opts.UseSystemTempFolder && Directory.Exists(tmpFolder))
+                            Directory.Delete(tmpFolder, true);
 
-                    Console.WriteLine(" ?> Cleaning up ok");
+                        Console.WriteLine(" ?> Cleaning up ok");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine(" !> Cleanup failed: {0}", ex.Message);
+                        Environment.ExitCode = 1;
+                        errorMessage ??= $"Cleanup failed: {ex.Message}";
+                    }
                 }
 
                 // Last line of a --progress run: written after the cleanup, so the reader knows
@@ -383,74 +399,71 @@ namespace Obj2Tiles
             }
         }
 
-        internal static bool CheckOptions(Options opts)
+        internal static bool CheckOptions(Options opts) => OptionsError(opts) == null;
+
+        /// <summary>The first problem of the options, also written to the log; null when they are valid.</summary>
+        private static string? OptionsError(Options opts)
         {
+            static string Fail(string error)
+            {
+                Console.WriteLine($" !> {error}");
+                return error;
+            }
 
             if (string.IsNullOrWhiteSpace(opts.Input))
             {
-                Console.WriteLine(" !> Input file is required");
-                return false;
+                return Fail("Input file is required");
             }
 
             if (!File.Exists(opts.Input))
             {
-                Console.WriteLine(" !> Input file does not exist");
-                return false;
+                return Fail("Input file does not exist");
             }
 
             if (string.IsNullOrWhiteSpace(opts.Output))
             {
-                Console.WriteLine(" !> Output folder is required");
-                return false;
+                return Fail("Output folder is required");
             }
 
             if (opts.LODs < 1)
             {
-                Console.WriteLine(" !> LODs must be at least 1");
-                return false;
+                return Fail("LODs must be at least 1");
             }
 
             if (opts.Divisions < 0)
             {
-                Console.WriteLine(" !> Divisions must be non-negative");
-                return false;
+                return Fail("Divisions must be non-negative");
             }
 
             var wants3tz = opts.Output.EndsWith(".3tz", StringComparison.OrdinalIgnoreCase) || opts.ThreeTz;
             if (wants3tz && opts.StopAt != Stage.Tiling)
             {
-                Console.WriteLine(" !> 3TZ output requires the full Tiling stage (do not set --stage to Decimation or Splitting)");
-                return false;
+                return Fail("3TZ output requires the full Tiling stage (do not set --stage to Decimation or Splitting)");
             }
 
             if (opts.ThreeTzCompression is < 0 or > 9)
             {
-                Console.WriteLine(" !> --3tz-compression must be between 0 and 9");
-                return false;
+                return Fail("--3tz-compression must be between 0 and 9");
             }
 
             if (opts.MaxTextureSize < 0)
             {
-                Console.WriteLine(" !> --max-texture-size must be non-negative (0 disables the cap)");
-                return false;
+                return Fail("--max-texture-size must be non-negative (0 disables the cap)");
             }
 
             if (opts.TextureQuality is < 1 or > 100)
             {
-                Console.WriteLine(" !> --texture-quality must be between 1 and 100");
-                return false;
+                return Fail("--texture-quality must be between 1 and 100");
             }
 
             if (opts.FineTextureQuality is < 0 or > 100)
             {
-                Console.WriteLine(" !> --fine-texture-quality must be between 0 and 100 (0 falls back to --texture-quality)");
-                return false;
+                return Fail("--fine-texture-quality must be between 0 and 100 (0 falls back to --texture-quality)");
             }
 
             if (opts.LodTextureScale is <= 0 or > 1)
             {
-                Console.WriteLine(" !> --lod-texture-scale must be in the (0, 1] range");
-                return false;
+                return Fail("--lod-texture-scale must be in the (0, 1] range");
             }
 
             if (opts.BaseError is { } baseError)
@@ -463,54 +476,46 @@ namespace Obj2Tiles
                 }
                 else if (!(baseError > 0) || !double.IsFinite(baseError))
                 {
-                    Console.WriteLine(" !> --error must be a positive finite number (or 0 / omitted for auto)");
-                    return false;
+                    return Fail("--error must be a positive finite number (or 0 / omitted for auto)");
                 }
             }
 
             if (opts.ErrorFactor is { } errorFactor && (!(errorFactor > 0) || !double.IsFinite(errorFactor)))
             {
-                Console.WriteLine(" !> --error-factor must be a positive finite number");
-                return false;
+                return Fail("--error-factor must be a positive finite number");
             }
 
             if (!(opts.Overlap >= 0) || !double.IsFinite(opts.Overlap))
             {
-                Console.WriteLine(" !> --overlap must be a non-negative finite number");
-                return false;
+                return Fail("--overlap must be a non-negative finite number");
             }
 
             if (opts.Ktx2Threads < 0)
             {
-                Console.WriteLine(" !> --ktx2-threads must be non-negative (0 preserves the current default)");
-                return false;
+                return Fail("--ktx2-threads must be non-negative (0 preserves the current default)");
             }
 
             if (opts.Ktx2Threads > 0 && opts.TextureFormat != TextureFormat.Ktx2)
             {
-                Console.WriteLine(" !> --ktx2-threads requires --texture-format Ktx2");
-                return false;
+                return Fail("--ktx2-threads requires --texture-format Ktx2");
             }
 
             if (opts.Ktx2ZstdLevel is < 0 or > 22)
             {
-                Console.WriteLine(" !> --ktx2-zstd-level must be 0 (disabled) or between 1 and 22");
-                return false;
+                return Fail("--ktx2-zstd-level must be 0 (disabled) or between 1 and 22");
             }
 
             if (opts.Ktx2ZstdLevel > 0 && opts.TextureFormat != TextureFormat.Ktx2)
             {
-                Console.WriteLine(" !> --ktx2-zstd-level requires --texture-format Ktx2");
-                return false;
+                return Fail("--ktx2-zstd-level requires --texture-format Ktx2");
             }
 
             if (opts.Ktx2ZstdLevel > 0 && !opts.Ktx2Uastc)
             {
-                Console.WriteLine(" !> --ktx2-zstd-level requires --ktx2-uastc");
-                return false;
+                return Fail("--ktx2-zstd-level requires --ktx2-uastc");
             }
 
-            return true;
+            return null;
         }
 
 

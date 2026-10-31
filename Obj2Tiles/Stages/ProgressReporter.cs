@@ -6,14 +6,16 @@ namespace Obj2Tiles.Stages;
 
 /// <summary>
 /// Machine-readable progress for --progress: one compact JSON object per line on the given
-/// writer (stdout by default), interleaved with the usual human-readable log lines. Every
-/// human log line starts with a space, so a reader can pick the progress events by keeping
-/// only the lines that start with '{'.
+/// writer (stdout by default), interleaved with the usual human-readable log lines. No human
+/// log line starts with '{', so a reader picks the progress events by keeping only the lines
+/// that do.
 ///
 /// Line shapes:
-///   {"stage":"decimation|splitting|tiling|packing","done":n,"total":m,"percent":p}
+///   {"stage":"decimation|splitting|root|tiling|packing","done":n,"total":m,"percent":p}
 ///   {"stage":"splitting","lod":i,"done":n,"total":m,"percent":p}   (done/total count the tiles of
-///       LOD i; percent is the progress of the whole splitting stage across every LOD)
+///       LOD i; percent is the progress of the whole splitting stage, the mean of the LODs'
+///       fractions: each LOD weighs the same. The first splitting line, without "lod", has
+///       total = the number of LODs)
 ///   {"stage":"done","percent":100,"elapsed":seconds}
 ///   {"stage":"error","message":"..."}
 ///
